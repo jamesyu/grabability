@@ -1,0 +1,3 @@
+Readability rewritten to just return the content body text, without any manipulation of the source DOM.
+
+More details to come soon.
