@@ -18,7 +18,7 @@ var dbg = function(s) {
  * Readability is licensed under the Apache License, Version 2.0.
  *
 **/
-var grabability = {
+var Grabability = {
 	version:     '0.1',
 	iframeLoads: 0,
 	bodyCache:  null,   /* Cache the body HTML in case we need to re-use it later */
@@ -41,22 +41,27 @@ var grabability = {
 		videoRe:                /http:\/\/(www\.)?(youtube|vimeo)\.com/i
 	},
 	
-	grab: function(el, options) {
-	    this.options = options || {};
-	    this.bodyCache = null;
-	    
-	    // Setup an element to do readability work in
-	    if(!this.work_area) {
-	        this.work_area = document.createElement('div');
-        } else {
-            this.work_area.innerHTML = '';
-        }
-
+	grab: function(el) {
 		// Get the element scope - we only run grabability within this scope, defaults to body
 	    this.scope = el ? $(el) : $('body');
 	    
+	    this.workarea        = $("<div style='display:none'></div>");
+        this.article_content = $("<div style='display:none'></div>");
+        
+        $('body').append(this.workarea).append(this.article_content);
+	    
+	    // Copy the whole scoped content into the work area, sanitizing it
+        this.copyContentToWorkarea();
+	    
 	    // Run the main readability logic
-		return this.run();
+		var out = this.run();
+		
+		// Cleanup
+		this.workarea.remove();
+		this.article_content.remove();
+		this.bodyCache = null;
+		
+		return out;
 	},
 
 	/**
@@ -70,35 +75,52 @@ var grabability = {
 	run: function(preserveUnlikelyCandidates) {
 		preserveUnlikelyCandidates = (typeof preserveUnlikelyCandidates == 'undefined') ? false : preserveUnlikelyCandidates;
 
-		if(!this.bodyCache) this.bodyCache = this.scope[0].innerHTML;
+		if(!this.bodyCache) this.bodyCache = this.workarea[0].innerHTML;
 		
 		this.prepDocument();
-		
-		var articleContent = this.grabArticle(preserveUnlikelyCandidates);
+		this.grabArticle(preserveUnlikelyCandidates);
 
 		/**
 		 * If we attempted to strip unlikely candidates on the first run through, and we ended up with no content,
 		 * that may mean we stripped out the actual content so we couldn't parse it. So re-run init while preserving
 		 * unlikely candidates to have a better shot at getting our content out properly.
 		**/
-		if(this.getInnerText(articleContent, false) == "")
+		if(this.getInnerText(this.article_content[0], false) == "")
 		{
 			if(!preserveUnlikelyCandidates) {
-				this.scope[0].innerHTML = grabability.bodyCache;
+				this.workarea[0].innerHTML = this.bodyCache;
 				return this.run(true);				
 			} else {
-				articleContent.innerHTML = "";
+				this.article_content.empty();
 			}
-		}
+		}		
 
-		return articleContent.innerHTML;
+		return this.article_content[0].innerHTML;
 	},
 
 	/**
 	 * Determines whether a node is within the scope
 	 */
-	withinScope: function(node) {
-	    return $(node).parents().index(this.scope) >= 0;
+	withinWorkarea: function(node) {
+	    return $(node).parents().index(this.workarea) >= 0;
+	},
+	
+	/**
+	 * Copies and sanitizes content into the working area
+	 */
+	copyContentToWorkarea: function() {
+	    var sanitize = function(content) {
+            // script tags
+            content = content.replace(new RegExp('<script[^>]*>([\\S\\s]*?)<\/script>', 'img'), '');
+
+            // iframes
+            content = content.replace(new RegExp('<iframe[^>]*>([\\S\\s]*?)<\/iframe>', 'img'), '');
+            content = content.replace(new RegExp('<iframe[^>]*>', 'img'), '');
+
+            return content;
+        }
+
+        this.workarea[0].innerHTML = sanitize(this.scope[0].innerHTML);
 	},
 
 	/**
@@ -109,7 +131,7 @@ var grabability = {
 	 **/
 	prepDocument: function () {
 		/* remove all scripts that are not grabability */
-		var scripts = this.scope.find('script');
+		var scripts = this.workarea.find('script');
 		for(i = scripts.length-1; i >= 0; i--)
 		{
 			if(typeof(scripts[i].src) == "undefined" || scripts[i].src.indexOf('grabability') == -1)
@@ -119,14 +141,14 @@ var grabability = {
 		}
 
 		/* Remove all style tags in head (not doing this on IE) - TODO: Why not? */
-		var styleTags = this.scope.find("style");
+		var styleTags = this.workarea.find("style");
 		for (var j=0;j < styleTags.length; j++)
 			styleTags[j].textContent = "";
 
 		/* Turn all double br's into p's */
 		/* Note, this is pretty costly as far as processing goes. Maybe optimize later. */
 		
-		this.scope[0].innerHTML = this.scope[0].innerHTML.replace(grabability.regexps.replaceBrsRe, '</p><p>').replace(grabability.regexps.replaceFontsRe, '<$1span>');
+		this.workarea[0].innerHTML = this.workarea[0].innerHTML.replace(this.regexps.replaceBrsRe, '</p><p>').replace(this.regexps.replaceFontsRe, '<$1span>');
 	},
 
 	/**
@@ -136,45 +158,45 @@ var grabability = {
 	 * @param Element
 	 * @return void
 	 **/
-	prepArticle: function (articleContent) {
-		grabability.cleanStyles(articleContent);
-		grabability.killBreaks(articleContent);
+	prepArticle: function () {
+		this.cleanStyles(this.article_content[0]);
+		this.killBreaks(this.article_content[0]);
 
 		/* Clean out junk from the article content */
-		grabability.clean(articleContent, "form");
-		grabability.clean(articleContent, "object");
-		grabability.clean(articleContent, "h1");
+		this.clean(this.article_content[0], "form");
+		this.clean(this.article_content[0], "object");
+		this.clean(this.article_content[0], "h1");
 		/**
 		 * If there is only one h2, they are probably using it
 		 * as a header and not a subheader, so remove it since we already have a header.
 		***/
-		if(articleContent.getElementsByTagName('h2').length == 1)
-			grabability.clean(articleContent, "h2");
-		grabability.clean(articleContent, "iframe");
+		if(this.article_content[0].getElementsByTagName('h2').length == 1)
+			this.clean(this.article_content[0], "h2");
+		this.clean(this.article_content[0], "iframe");
 
-		grabability.cleanHeaders(articleContent);
+		this.cleanHeaders(this.article_content[0]);
 
 		/* Do these last as the previous stuff may have removed junk that will affect these */
-		grabability.cleanConditionally(articleContent, "table");
-		grabability.cleanConditionally(articleContent, "ul");
-		grabability.cleanConditionally(articleContent, "div");
+		this.cleanConditionally(this.article_content[0], "table");
+		this.cleanConditionally(this.article_content[0], "ul");
+		this.cleanConditionally(this.article_content[0], "div");
 
 		/* Remove extra paragraphs */
-		var articleParagraphs = articleContent.getElementsByTagName('p');
+		var articleParagraphs = this.article_content[0].getElementsByTagName('p');
 		for(i = articleParagraphs.length-1; i >= 0; i--)
 		{
 			var imgCount    = articleParagraphs[i].getElementsByTagName('img').length;
 			var embedCount  = articleParagraphs[i].getElementsByTagName('embed').length;
 			var objectCount = articleParagraphs[i].getElementsByTagName('object').length;
 			
-			if(imgCount == 0 && embedCount == 0 && objectCount == 0 && grabability.getInnerText(articleParagraphs[i], false) == '')
+			if(imgCount == 0 && embedCount == 0 && objectCount == 0 && this.getInnerText(articleParagraphs[i], false) == '')
 			{
 				articleParagraphs[i].parentNode.removeChild(articleParagraphs[i]);
 			}
 		}
 
 		try {
-			articleContent.innerHTML = articleContent.innerHTML.replace(/<br[^>]*>\s*<p/gi, '<p');		
+			this.article_content[0].innerHTML = this.article_content[0].innerHTML.replace(/<br[^>]*>\s*<p/gi, '<p');		
 		}
 		catch (e) {
 			dbg("Cleaning innerHTML of breaks failed. This is an IE strict-block-elements bug. Ignoring.");
@@ -224,7 +246,7 @@ var grabability = {
 				break;
 		}
 
-		node.grabability.contentScore += grabability.getClassWeight(node);
+		node.grabability.contentScore += this.getClassWeight(node);
 	},
 	
 	/***
@@ -243,13 +265,13 @@ var grabability = {
 		**/
 		for(var nodeIndex = 0; (node = document.getElementsByTagName('*')[nodeIndex]); nodeIndex++)
 		{
-		    if(!this.withinScope(node)) continue;
+		    if(!this.withinWorkarea(node)) continue;
 		    
 			/* Remove unlikely candidates */
 			if (!preserveUnlikelyCandidates) {
 				var unlikelyMatchString = node.className + node.id;
-				if (unlikelyMatchString.search(grabability.regexps.unlikelyCandidatesRe) !== -1 &&
-				    unlikelyMatchString.search(grabability.regexps.okMaybeItsACandidateRe) == -1 &&
+				if (unlikelyMatchString.search(this.regexps.unlikelyCandidatesRe) !== -1 &&
+				    unlikelyMatchString.search(this.regexps.okMaybeItsACandidateRe) == -1 &&
 					node.tagName !== "BODY")
 				{
 					dbg("Removing unlikely candidate - " + unlikelyMatchString);
@@ -261,7 +283,7 @@ var grabability = {
 
 			/* Turn all divs that don't have children block level elements into p's */
 			if (node.tagName === "DIV") {
-				if (node.innerHTML.search(grabability.regexps.divToPElementsRe) === -1)	{
+				if (node.innerHTML.search(this.regexps.divToPElementsRe) === -1)	{
 					dbg("Altering div to p");
 					var newNode = document.createElement('p');
 					try {
@@ -302,29 +324,29 @@ var grabability = {
 		var candidates    = [];
 
 		for (var j=0; j	< allParagraphs.length; j++) {
-		    if(!this.withinScope(allParagraphs[j])) continue;
+		    if(!this.withinWorkarea(allParagraphs[j])) continue;
 		    
 			var parentNode      = allParagraphs[j].parentNode;
 			var grandParentNode = parentNode.parentNode;
-			var innerText       = grabability.getInnerText(allParagraphs[j]);
+			var innerText       = this.getInnerText(allParagraphs[j]);
 
 			/* If this paragraph is less than 25 characters, don't even count it. */
 			if(innerText.length < 25) continue;
 
 			/* Initialize grabability data for the parent. */
-			if(this.withinScope(parentNode)) {
+			if(this.withinWorkarea(parentNode)) {
     			if(typeof parentNode.grabability == 'undefined')
     			{
-    				grabability.initializeNode(parentNode);
+    				this.initializeNode(parentNode);
     				candidates.push(parentNode);
     			}
 			}
 
 			/* Initialize grabability data for the grandparent. */
-			if(this.withinScope(grandParentNode)) {
+			if(this.withinWorkarea(grandParentNode)) {
     			if(typeof grandParentNode.grabability == 'undefined')
     			{
-    				grabability.initializeNode(grandParentNode);
+    				this.initializeNode(grandParentNode);
     				candidates.push(grandParentNode);
     			}
 			}
@@ -341,8 +363,8 @@ var grabability = {
 			contentScore += Math.min(Math.floor(innerText.length / 100), 3);
 			
 			/* Add the score to the parent. The grandparent gets half. */
-			if(this.withinScope(parentNode)) parentNode.grabability.contentScore += contentScore;
-			if(this.withinScope(grandParentNode)) grandParentNode.grabability.contentScore += contentScore/2;
+			if(this.withinWorkarea(parentNode)) parentNode.grabability.contentScore += contentScore;
+			if(this.withinWorkarea(grandParentNode)) grandParentNode.grabability.contentScore += contentScore/2;
 		}
 
 		/**
@@ -356,16 +378,13 @@ var grabability = {
 			 * Scale the final candidates score based on link density. Good content should have a
 			 * relatively small link density (5% or less) and be mostly unaffected by this operation.
 			**/
-			candidates[i].grabability.contentScore = candidates[i].grabability.contentScore * (1-grabability.getLinkDensity(candidates[i]));
+			candidates[i].grabability.contentScore = candidates[i].grabability.contentScore * (1-this.getLinkDensity(candidates[i]));
 
 			dbg('Candidate: ' + candidates[i] + " (" + candidates[i].className + ":" + candidates[i].id + ") with score " + candidates[i].grabability.contentScore);
 
 			if(!topCandidate || candidates[i].grabability.contentScore > topCandidate.grabability.contentScore)
 				topCandidate = candidates[i];
 		}
-		
-		var articleContent = document.createElement("DIV");
-	    articleContent.id = "grabability-content";
 		
 		if(topCandidate) {
     		/**
@@ -378,7 +397,7 @@ var grabability = {
     		for(var i=0, il=siblingNodes.length; i < il; i++)
     		{
     			var siblingNode = siblingNodes[i];
-    			if(!this.withinScope(siblingNode)) continue;
+    			if(!this.withinWorkarea(siblingNode)) continue;
 
     			var append = false;
 
@@ -396,8 +415,8 @@ var grabability = {
     			}
 
     			if(siblingNode.nodeName == "P") {
-    				var linkDensity = grabability.getLinkDensity(siblingNode);
-    				var nodeContent = grabability.getInnerText(siblingNode);
+    				var linkDensity = this.getLinkDensity(siblingNode);
+    				var nodeContent = this.getInnerText(siblingNode);
     				var nodeLength  = nodeContent.length;
 
     				if(nodeLength > 80 && linkDensity < 0.25)
@@ -415,20 +434,15 @@ var grabability = {
     				dbg("Appending sibling node: " );
 
     				/* Append sibling and subtract from our list because it removes the node when you append to another node */
-    				articleContent.innerHTML += siblingNode.innerHTML;
+    				this.article_content[0].innerHTML += siblingNode.innerHTML;
     			}
     		}				
-
-    		//console.log('articleContent: ');
-    		//console.log(articleContent);
 
     		/**
     		 * So we have all of the content that we need. Now we clean it up for presentation.
     		**/
-    		grabability.prepArticle(articleContent);
+    		this.prepArticle();
 		}
-		
-	    return articleContent;
 	},
 	
 	stripScripts: function(html) {
@@ -448,12 +462,12 @@ var grabability = {
 		normalizeSpaces = (typeof normalizeSpaces == 'undefined') ? true : normalizeSpaces;
 
 		if (navigator.appName == "Microsoft Internet Explorer")
-			textContent = e.innerText.replace( grabability.regexps.trimRe, "" );
+			textContent = e.innerText.replace( this.regexps.trimRe, "" );
 		else
-			textContent = e.textContent.replace( grabability.regexps.trimRe, "" );
+			textContent = e.textContent.replace( this.regexps.trimRe, "" );
 
 		if(normalizeSpaces)
-			return textContent.replace( grabability.regexps.normalizeRe, " ");
+			return textContent.replace( this.regexps.normalizeRe, " ");
 		else
 			return textContent;
 	},
@@ -467,7 +481,7 @@ var grabability = {
 	**/
 	getCharCount: function (e,s) {
 	    s = s || ",";
-		return grabability.getInnerText(e).split(s).length;
+		return this.getInnerText(e).split(s).length;
 	},
 
 	/**
@@ -495,7 +509,7 @@ var grabability = {
 				if(cur.className != "grabability-styled") {
 					cur.removeAttribute("style");					
 				}
-				grabability.cleanStyles( cur );
+				this.cleanStyles( cur );
 			}
 			cur = cur.nextSibling;
 		}			
@@ -510,11 +524,11 @@ var grabability = {
 	**/
 	getLinkDensity: function (e) {
 		var links      = e.getElementsByTagName("a");
-		var textLength = grabability.getInnerText(e).length;
+		var textLength = this.getInnerText(e).length;
 		var linkLength = 0;
 		for(var i=0, il=links.length; i<il;i++)
 		{
-			linkLength += grabability.getInnerText(links[i]).length;
+			linkLength += this.getInnerText(links[i]).length;
 		}		
 
 		return linkLength / textLength;
@@ -533,20 +547,20 @@ var grabability = {
 		/* Look for a special classname */
 		if (e.className != "")
 		{
-			if(e.className.search(grabability.regexps.negativeRe) !== -1)
+			if(e.className.search(this.regexps.negativeRe) !== -1)
 				weight -= 25;
 
-			if(e.className.search(grabability.regexps.positiveRe) !== -1)
+			if(e.className.search(this.regexps.positiveRe) !== -1)
 				weight += 25;				
 		}
 
 		/* Look for a special ID */
 		if (typeof(e.id) == 'string' && e.id != "")
 		{
-			if(e.id.search(grabability.regexps.negativeRe) !== -1)
+			if(e.id.search(this.regexps.negativeRe) !== -1)
 				weight -= 25;
 
-			if(e.id.search(grabability.regexps.positiveRe) !== -1)
+			if(e.id.search(this.regexps.positiveRe) !== -1)
 				weight += 25;				
 		}
 
@@ -561,7 +575,7 @@ var grabability = {
 	 **/
 	killBreaks: function (e) {
 		try {
-			e.innerHTML = e.innerHTML.replace(grabability.regexps.killBreaksRe,'<br />');		
+			e.innerHTML = e.innerHTML.replace(this.regexps.killBreaksRe,'<br />');		
 		}
 		catch (e) {
 			dbg("KillBreaks failed - this is an IE bug. Ignoring.");
@@ -582,7 +596,7 @@ var grabability = {
 
 		for (var y=targetList.length-1; y >= 0; y--) {
 			/* Allow youtube and vimeo videos through as people usually want to see those. */
-			if(isEmbed && targetList[y].innerHTML.search(grabability.regexps.videoRe) !== -1)
+			if(isEmbed && targetList[y].innerHTML.search(this.regexps.videoRe) !== -1)
 			{
 				continue;
 			}
@@ -608,7 +622,7 @@ var grabability = {
 		 * TODO: Consider taking into account original contentScore here.
 		**/
 		for (var i=curTagsLength-1; i >= 0; i--) {
-			var weight = grabability.getClassWeight(tagsList[i]);
+			var weight = this.getClassWeight(tagsList[i]);
 
 			dbg("Cleaning Conditionally " + tagsList[i] + " (" + tagsList[i].className + ":" + tagsList[i].id + ")" + ((typeof tagsList[i].grabability != 'undefined') ? (" with score " + tagsList[i].grabability.contentScore) : ''));
 
@@ -616,7 +630,7 @@ var grabability = {
 			{
 				tagsList[i].parentNode.removeChild(tagsList[i]);
 			}
-			else if ( grabability.getCharCount(tagsList[i],',') < 10) {
+			else if ( this.getCharCount(tagsList[i],',') < 10) {
 				/**
 				 * If there are not very many commas, and the number of
 				 * non-paragraph elements is more than paragraphs or other ominous signs, remove the element.
@@ -630,13 +644,13 @@ var grabability = {
 				var embedCount = 0;
 				var embeds     = tagsList[i].getElementsByTagName("embed");
 				for(var ei=0,il=embeds.length; ei < il; ei++) {
-					if (embeds[ei].src.search(grabability.regexps.videoRe) == -1) {
+					if (embeds[ei].src.search(this.regexps.videoRe) == -1) {
 					  embedCount++;	
 					}
 				}
 
-				var linkDensity   = grabability.getLinkDensity(tagsList[i]);
-				var contentLength = grabability.getInnerText(tagsList[i]).length;
+				var linkDensity   = this.getLinkDensity(tagsList[i]);
+				var contentLength = this.getInnerText(tagsList[i]).length;
 				var toRemove      = false;
 
 				if ( img > p ) {
@@ -672,7 +686,7 @@ var grabability = {
 		for (var headerIndex = 1; headerIndex < 7; headerIndex++) {
 			var headers = e.getElementsByTagName('h' + headerIndex);
 			for (var i=headers.length-1; i >=0; i--) {
-				if (grabability.getClassWeight(headers[i]) < 0 || grabability.getLinkDensity(headers[i]) > 0.33) {
+				if (this.getClassWeight(headers[i]) < 0 || this.getLinkDensity(headers[i]) > 0.33) {
 					headers[i].parentNode.removeChild(headers[i]);
 				}
 			}
